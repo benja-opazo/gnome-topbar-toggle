@@ -19,6 +19,8 @@ use dirs;
 struct PersistentConfig {
     emoji: String,
     script_path: PathBuf,
+    #[serde(default)]
+    recents: Vec<String>, // New field
 }
 
 impl PersistentConfig {
@@ -41,6 +43,7 @@ impl PersistentConfig {
         Self {
             emoji: "🚀".to_string(),
             script_path: PathBuf::from("script.sh"),
+            recents: Vec::new()
         }
     }
 
@@ -70,56 +73,166 @@ fn create_emoji_picker(
     app_state: Arc<Mutex<AppContext>>, 
     app_id: String, 
     tray: Arc<Mutex<tray_icon::TrayIcon>>
-) -> gtk::Window {
+) -> (gtk::Window, gtk::FlowBox) {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
-    window.set_title("Select Emoji");
-    window.set_default_size(400, 300);
+    window.set_title("Emoji Picker");
+    window.set_default_size(450, 600);
+
+    let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let notebook = gtk::Notebook::new();
+    notebook.set_show_tabs(true);
+    notebook.set_show_border(false);
+    notebook.set_scrollable(true);
 
     let scrolled = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
-    let flowbox = gtk::FlowBox::new();
-    flowbox.set_valign(gtk::Align::Start);
-    flowbox.set_max_children_per_line(10);
-    flowbox.set_selection_mode(gtk::SelectionMode::None);
+    scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    let adj = scrolled.vadjustment();
 
-    // Populate with all available emojis
+    let content_vbox = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    content_vbox.set_margin(10);
+
+    // ID = Internal Library Name, Name = Custom UI Label, Icon = Tab Icon
+    let category_order = vec![
+        ("Recents", "Recently Used", "🕒"),
+        ("SmileysAndEmotion", "Smileys", "😀"),
+        ("PeopleAndBody", "People", "👋"),
+        ("AnimalsAndNature", "Nature", "🐶"),
+        ("FoodAndDrink", "Food", "🍎"),
+        ("TravelAndPlaces", "Travel", "🚗"),
+        ("Activities", "Activities", "⚽"),
+        ("Objects", "Objects", "💡"),
+        ("Symbols", "Symbols", "🔣"),
+        ("Flags", "Flags", "🏁"),
+    ];
+
+    let mut emoji_groups: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
     for emoji in emojis::iter() {
-        let btn = gtk::Button::with_label(emoji.as_str());
-        btn.set_relief(gtk::ReliefStyle::None);
-        
-        let app_state_c = Arc::clone(&app_state);
-        let app_id_c = app_id.clone();
-        let tray_c = Arc::clone(&tray);
-        let win_c = window.clone();
-        let emoji_str = emoji.as_str().to_string();
-
-        btn.connect_clicked(move |_| {
-            let mut app = app_state_c.lock().unwrap();
-            app.emoji = emoji_str.clone();
-
-            // Persistence
-            PersistentConfig {
-                emoji: app.emoji.clone(),
-                script_path: app.script_path.clone(),
-            }.save(&app_id_c);
-
-            // Update Tray
-            let _ = tray_c.lock().unwrap().set_icon(Some(create_emoji_icon(&app.emoji, app.state)));
-            
-            win_c.hide();
-        });
-
-        flowbox.add(&btn);
+        let group_name = format!("{:?}", emoji.group());
+        emoji_groups.entry(group_name).or_insert_with(Vec::new).push(emoji.as_str().to_string());
     }
 
-    scrolled.add(&flowbox);
-    window.add(&scrolled);
+    let mut recents_flowbox = gtk::FlowBox::new();
+    let mut sections: Vec<gtk::Box> = Vec::new();
+
+    for (group_id, display_name, icon) in category_order {
+        let flowbox = gtk::FlowBox::new();
+        flowbox.set_max_children_per_line(9);
+        flowbox.set_selection_mode(gtk::SelectionMode::None);
+
+        if group_id == "Recents" {
+            recents_flowbox = flowbox.clone(); 
+        }
+
+        let config = PersistentConfig::load(&app_id);
+        
+        // CRITICAL FIX: Use group_id for lookup, NOT display_name
+        let list = if group_id == "Recents" { 
+            config.recents 
+        } else { 
+            emoji_groups.get(group_id).cloned().unwrap_or_default() 
+        };
+        
+        // Ensure the category shows up if it has emojis or is the Recents tab
+        if list.is_empty() && group_id != "Recents" { continue; }
+
+        let section_box = gtk::Box::new(gtk::Orientation::Vertical, 5);
+        
+        // Label using the Custom Display Name
+        let label = gtk::Label::new(None);
+        label.set_markup(&format!("<span size='large' weight='bold'>{}</span>", display_name));
+        label.set_halign(gtk::Align::Start);
+        label.set_margin_bottom(5);
+        
+        section_box.add(&label);
+        section_box.add(&flowbox);
+
+        for emoji_str in list {
+            let btn = gtk::Button::with_label(&emoji_str);
+            btn.set_relief(gtk::ReliefStyle::None);
+            btn.set_size_request(42, 42);
+            
+            let app_state_c = Arc::clone(&app_state);
+            let tray_c = Arc::clone(&tray);
+            let app_id_c = app_id.clone();
+            let win_c = window.clone();
+            let e_str = emoji_str.clone();
+
+            btn.connect_clicked(move |_| {
+                let mut app = app_state_c.lock().unwrap();
+                app.emoji = e_str.clone();
+                
+                let mut cfg = PersistentConfig::load(&app_id_c);
+                cfg.emoji = e_str.clone();
+                cfg.recents.retain(|x| x != &e_str);
+                cfg.recents.insert(0, e_str.clone());
+                cfg.recents.truncate(9);
+                cfg.save(&app_id_c);
+
+                let _ = tray_c.lock().unwrap().set_icon(Some(create_emoji_icon(&app.emoji, app.state)));
+                win_c.hide();
+            });
+            
+            flowbox.add(&btn);
+        }
+
+        content_vbox.add(&section_box);
+        sections.push(section_box.clone());
+
+        let tab_label = gtk::Label::new(Some(icon));
+        let dummy_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        notebook.append_page(&dummy_page, Some(&tab_label));
+        
+        // Ensure all child widgets (including the label) are rendered
+        section_box.show_all();
+    }
+
+    let adj_animate = adj.clone();
+    let content_ref = content_vbox.clone();
+    notebook.connect_switch_page(move |_, _, page_num| {
+        if let Some(target_section) = sections.get(page_num as usize) {
+            let adj_timer = adj_animate.clone();
+            let target = target_section.clone();
+            let container = content_ref.clone();
+
+            glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+                if let Some((_, target_y)) = target.translate_coordinates(&container, 0, 0) {
+                    let target_y = target_y as f64;
+                    let start_y = adj_timer.value();
+                    let distance = target_y - start_y;
+                    let steps = 12;
+                    let mut current_step = 0;
+
+                    let adj_frame = adj_timer.clone();
+                    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
+                        current_step += 1;
+                        let progress = current_step as f64 / steps as f64;
+                        let ease_out = 1.0 - (1.0 - progress).powi(3);
+                        
+                        adj_frame.set_value(start_y + (distance * ease_out));
+
+                        if current_step < steps {
+                            glib::ControlFlow::Continue
+                        } else {
+                            glib::ControlFlow::Break
+                        }
+                    });
+                }
+                glib::ControlFlow::Break
+            });
+        }
+    });
+
+    scrolled.add(&content_vbox);
+    vbox.pack_start(&notebook, false, false, 0);
+    vbox.pack_start(&scrolled, true, true, 0);
+    window.add(&vbox);
     
     window.connect_delete_event(|win, _| {
         win.hide();
         glib::Propagation::Stop
     });
 
-    window
+    (window, recents_flowbox)
 }
 
 fn send_notif(title: &str, body: &str) {
@@ -221,7 +334,7 @@ fn main() {
             .unwrap()
     ));
     // Create the picker window (it will be hidden by default)
-    let emoji_picker_window = create_emoji_picker(
+    let (emoji_picker_window, recents_box) = create_emoji_picker(
         Arc::clone(&app_state),
         app_id.clone(),
         Arc::clone(&tray_icon),
@@ -290,17 +403,20 @@ fn main() {
                 
                 if response == gtk::ResponseType::Accept {
                 if let Some(path) = file_chooser.filename() {
-                    let mut app = app_state_file.lock().unwrap();
-                    app.script_path = path.clone();
-                    
-                    // SAVE TO DISK
-                    PersistentConfig {
-                        emoji: app.emoji.clone(),
-                        script_path: path,
-                    }.save(&app_id);
-                    
-                    send_notif("Script Updated", "Configuration saved.");
-                }
+                let mut app = app_state_file.lock().unwrap();
+                app.script_path = path.clone();
+                
+                // Load existing config to preserve the recents list
+                let current_cfg = PersistentConfig::load(&app_id);
+
+                PersistentConfig {
+                    emoji: app.emoji.clone(),
+                    script_path: path,
+                    recents: current_cfg.recents, // Fixes E0063
+                }.save(&app_id);
+                
+                send_notif("Script Updated", "Configuration saved.");
+            }
                 } else {
                     debug!("File selection cancelled.");
                 }
@@ -311,21 +427,46 @@ fn main() {
                 //file_chooser.destroy();
                 
             } else if event.id == "select_emoji" {
-                emoji_picker_window.show_all();
-                emoji_picker_window.present();
-                /*
-                let new_emoji = event.id.as_ref().replace("emoji_", "");
-                let mut app = app_state.lock().unwrap();
-                app.emoji = new_emoji.clone();
-                
-                // SAVE TO DISK
-                PersistentConfig {
-                    emoji: new_emoji,
-                    script_path: app.script_path.clone(),
-                }.save(&app_id);
+                let config = PersistentConfig::load(&app_id);
+    
+    // 2. Clear the old recent buttons
+    for child in recents_box.children() {
+        recents_box.remove(&child);
+    }
 
-                let _ = tray_icon.lock().unwrap().set_icon(Some(create_emoji_icon(&app.emoji, app.state)));*/
-            } else if event.id == "toggle" {
+    // 3. Repopulate with new recents
+    for e_str in config.recents {
+        let btn = gtk::Button::with_label(&e_str);
+        btn.set_relief(gtk::ReliefStyle::None);
+        btn.set_size_request(42, 42);
+        
+        // Reuse your existing click logic here to update app_state
+        let app_state_c = Arc::clone(&app_state);
+        let tray_c = Arc::clone(&tray_icon);
+        let app_id_c = app_id.clone();
+        let win_c = emoji_picker_window.clone();
+        let e_val = e_str.clone();
+
+        btn.connect_clicked(move |_| {
+            let mut app = app_state_c.lock().unwrap();
+            app.emoji = e_val.clone();
+            
+            let mut cfg = PersistentConfig::load(&app_id_c);
+            cfg.recents.retain(|x| x != &e_val);
+            cfg.recents.insert(0, e_val.clone());
+            cfg.recents.truncate(9);
+            cfg.save(&app_id_c);
+
+            let _ = tray_c.lock().unwrap().set_icon(Some(create_emoji_icon(&app.emoji, app.state)));
+            win_c.hide();
+        });
+
+        recents_box.add(&btn);
+    }
+
+    emoji_picker_window.show_all();
+    emoji_picker_window.present();
+} else if event.id == "toggle" {
                 let mut app = app_state.lock().unwrap();
                 if app.state == State::Off || app.state == State::Error {
                     info!("Executing: {:?}", app.script_path);
