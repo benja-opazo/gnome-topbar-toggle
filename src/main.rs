@@ -1,5 +1,5 @@
 use gtk::prelude::*;
-use gtk::{FileChooserAction, FileChooserNative, ResponseType};
+use gtk::{FileChooserAction, ResponseType};
 use std::path::PathBuf;
 use notify_rust::Notification;
 use std::process::Command;
@@ -10,7 +10,47 @@ use tray_icon::{
 };
 use cairo::{Context, ImageSurface, Format, Antialias};
 use tracing::{info, debug, error, warn};
+use serde::{Serialize, Deserialize};
+use std::fs;
+use std::env;
+use dirs;
 
+#[derive(Serialize, Deserialize, Clone)]
+struct PersistentConfig {
+    emoji: String,
+    script_path: PathBuf,
+}
+
+impl PersistentConfig {
+    fn get_path(id: &str) -> PathBuf {
+        let mut path = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
+        path.push("bash-toggle");
+        let _ = fs::create_dir_all(&path);
+        path.push(format!("{}.json", id));
+        path
+    }
+
+    fn load(id: &str) -> Self {
+        let path = Self::get_path(id);
+        if let Ok(data) = fs::read_to_string(path) {
+            if let Ok(config) = serde_json::from_str(&data) {
+                return config;
+            }
+        }
+        // Default values if no file exists
+        Self {
+            emoji: "🚀".to_string(),
+            script_path: PathBuf::from("script.sh"),
+        }
+    }
+
+    fn save(&self, id: &str) {
+        let path = Self::get_path(id);
+        if let Ok(data) = serde_json::to_string(self) {
+            let _ = fs::write(path, data);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum State {
@@ -24,6 +64,62 @@ struct AppContext {
     state: State,
     emoji: String,
     script_path: std::path::PathBuf, // Store the selected script path
+}
+
+fn create_emoji_picker(
+    app_state: Arc<Mutex<AppContext>>, 
+    app_id: String, 
+    tray: Arc<Mutex<tray_icon::TrayIcon>>
+) -> gtk::Window {
+    let window = gtk::Window::new(gtk::WindowType::Toplevel);
+    window.set_title("Select Emoji");
+    window.set_default_size(400, 300);
+
+    let scrolled = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+    let flowbox = gtk::FlowBox::new();
+    flowbox.set_valign(gtk::Align::Start);
+    flowbox.set_max_children_per_line(10);
+    flowbox.set_selection_mode(gtk::SelectionMode::None);
+
+    // Populate with all available emojis
+    for emoji in emojis::iter() {
+        let btn = gtk::Button::with_label(emoji.as_str());
+        btn.set_relief(gtk::ReliefStyle::None);
+        
+        let app_state_c = Arc::clone(&app_state);
+        let app_id_c = app_id.clone();
+        let tray_c = Arc::clone(&tray);
+        let win_c = window.clone();
+        let emoji_str = emoji.as_str().to_string();
+
+        btn.connect_clicked(move |_| {
+            let mut app = app_state_c.lock().unwrap();
+            app.emoji = emoji_str.clone();
+
+            // Persistence
+            PersistentConfig {
+                emoji: app.emoji.clone(),
+                script_path: app.script_path.clone(),
+            }.save(&app_id_c);
+
+            // Update Tray
+            let _ = tray_c.lock().unwrap().set_icon(Some(create_emoji_icon(&app.emoji, app.state)));
+            
+            win_c.hide();
+        });
+
+        flowbox.add(&btn);
+    }
+
+    scrolled.add(&flowbox);
+    window.add(&scrolled);
+    
+    window.connect_delete_event(|win, _| {
+        win.hide();
+        glib::Propagation::Stop
+    });
+
+    window
 }
 
 fn send_notif(title: &str, body: &str) {
@@ -75,32 +171,44 @@ fn create_emoji_icon(emoji: &str, state: State) -> tray_icon::Icon {
 
 fn main() {
     tracing_subscriber::fmt::init();
-    info!("Initializing gnome-topbar-toggle...");
+
+    // 1. Get ID from input arguments
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        eprintln!("Usage: gnome-topbar-toggle <unique-id>");
+        std::process::exit(1);
+    }
+    let app_id = args[1].clone();
+    info!("Starting BashToggle with ID: {}", app_id);
 
     gtk::init().expect("Failed to initialize GTK");
 
     // Initialize with a default script.sh in the current directory
+    let config = PersistentConfig::load(&app_id);
+
     let app_state = Arc::new(Mutex::new(AppContext {
         state: State::Off,
-        emoji: "🚀".to_string(),
-        script_path: PathBuf::from("script.sh"), 
+        emoji: config.emoji.clone(),
+        script_path: config.script_path.clone(),
     }));
 
     // --- SETUP MENU ---
     let menu = Menu::new();
     let toggle_item = MenuItem::with_id("toggle", "State: Off", true, None);
     let add_script_item = MenuItem::with_id("add_script", "Add/Change Script", true, None);
-    let emoji_submenu = Submenu::with_id("emoji_root", "Select Emoji", true);
+    let emoji_picker_item = MenuItem::with_id("select_emoji", "Browse All Emojis...", true, None);
+    //let emoji_submenu = Submenu::with_id("emoji_root", "Select Emoji", true);
     let emojis = vec!["🚀", "⚙️", "🔥", "🤖", "⭐"];
-    for e in emojis {
+    /*for e in emojis {
         emoji_submenu.append(&MenuItem::with_id(format!("emoji_{}", e), e, true, None)).unwrap();
-    }
+    }*/
 
     menu.append_items(&[
         &toggle_item,
         &add_script_item, // NEW ITEM
         &PredefinedMenuItem::separator(),
-        &emoji_submenu,
+        &emoji_picker_item, // New item
+        //&emoji_submenu,
         &PredefinedMenuItem::separator(),
         &MenuItem::with_id("quit", "Quit", true, None),
     ]).unwrap();
@@ -108,10 +216,17 @@ fn main() {
     let tray_icon = Arc::new(Mutex::new(
         TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_icon(create_emoji_icon("🚀", State::Off))
+            .with_icon(create_emoji_icon(&config.emoji, State::Off))
             .build()
             .unwrap()
     ));
+    // Create the picker window (it will be hidden by default)
+    let emoji_picker_window = create_emoji_picker(
+        Arc::clone(&app_state),
+        app_id.clone(),
+        Arc::clone(&tray_icon),
+    );
+
 
     let (tx, rx) = glib::MainContext::channel::<State>(glib::Priority::default());
     let menu_channel = MenuEvent::receiver();
@@ -174,12 +289,18 @@ fn main() {
                 let response = file_chooser.run();
                 
                 if response == gtk::ResponseType::Accept {
-                    if let Some(path) = file_chooser.filename() {
-                        info!("New script selected: {:?}", path);
-                        let mut app = app_state_file.lock().unwrap();
-                        app.script_path = path;
-                        send_notif("Script Updated", "Ready to toggle.");
-                    }
+                if let Some(path) = file_chooser.filename() {
+                    let mut app = app_state_file.lock().unwrap();
+                    app.script_path = path.clone();
+                    
+                    // SAVE TO DISK
+                    PersistentConfig {
+                        emoji: app.emoji.clone(),
+                        script_path: path,
+                    }.save(&app_id);
+                    
+                    send_notif("Script Updated", "Configuration saved.");
+                }
                 } else {
                     debug!("File selection cancelled.");
                 }
@@ -189,12 +310,21 @@ fn main() {
                 // unsafe
                 //file_chooser.destroy();
                 
-            } else if event.id.as_ref().starts_with("emoji_") {
+            } else if event.id == "select_emoji" {
+                emoji_picker_window.show_all();
+                emoji_picker_window.present();
+                /*
                 let new_emoji = event.id.as_ref().replace("emoji_", "");
-                info!("Emoji updated to: {}", new_emoji);
                 let mut app = app_state.lock().unwrap();
-                app.emoji = new_emoji;
-                let _ = tray_icon.lock().unwrap().set_icon(Some(create_emoji_icon(&app.emoji, app.state)));
+                app.emoji = new_emoji.clone();
+                
+                // SAVE TO DISK
+                PersistentConfig {
+                    emoji: new_emoji,
+                    script_path: app.script_path.clone(),
+                }.save(&app_id);
+
+                let _ = tray_icon.lock().unwrap().set_icon(Some(create_emoji_icon(&app.emoji, app.state)));*/
             } else if event.id == "toggle" {
                 let mut app = app_state.lock().unwrap();
                 if app.state == State::Off || app.state == State::Error {
