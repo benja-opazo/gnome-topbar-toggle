@@ -1,0 +1,13 @@
+[package]
+name = "gnome-topbar-toggle"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gtk = "0.18"
+glib = "0.18"
+tray-icon = "0.19"
+notify-rust = "4.10"
+cairo-rs = { version = "0.18", features = ["use_glib"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
