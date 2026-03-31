@@ -75,8 +75,15 @@ fn create_emoji_picker(
     tray: Arc<Mutex<tray_icon::TrayIcon>>,
 ) -> (gtk::Window, gtk::FlowBox) {
     let window = gtk::Window::new(gtk::WindowType::Toplevel);
+
     window.set_title("Emoji Picker");
     window.set_default_size(450, 600);
+    window.set_decorated(false);
+    window.set_skip_taskbar_hint(true);
+
+    window.set_type_hint(gtk::gdk::WindowTypeHint::Utility);
+    // Ensure the window can actually receive focus events
+    window.set_focus_on_map(true);
 
     let vbox = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let notebook = gtk::Notebook::new();
@@ -85,13 +92,88 @@ fn create_emoji_picker(
     notebook.set_scrollable(true);
 
     let scrolled = gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
+
+    // Inside create_emoji_picker
+    let adj_scroll = scrolled.vadjustment();
+    let current_animation: Arc<Mutex<Option<glib::SourceId>>> = Arc::new(Mutex::new(None));
+    // Track the target and start time outside the closure to allow "chaining"
+    let animation_data = Arc::new(Mutex::new((0.0, 0.0, std::time::Instant::now())));
+
+    let anim_tracker = current_animation.clone();
+    let data_tracker = animation_data.clone();
+
+    scrolled.connect_scroll_event(move |_, event| {
+        let (_, dy) = event.scroll_deltas().unwrap_or((0.0, 0.0));
+
+        if dy != 0.0 {
+            let mut data = data_tracker.lock().unwrap();
+            let mut tracker = anim_tracker.lock().unwrap();
+
+            let current_val = adj_scroll.value();
+
+            // If an animation is already running, we build on top of its target
+            let base_y = if tracker.is_some() {
+                data.1
+            } else {
+                current_val
+            };
+            let new_target = (base_y + (dy * 160.0)).clamp(
+                adj_scroll.lower(),
+                adj_scroll.upper() - adj_scroll.page_size(),
+            );
+
+            // Update the shared animation data
+            *data = (current_val, new_target, std::time::Instant::now());
+
+            if tracker.is_none() {
+                let adj_inner = adj_scroll.clone();
+                let anim_tracker_inner = anim_tracker.clone();
+                let data_inner = data_tracker.clone();
+
+                let source_id =
+                    glib::timeout_add_local(std::time::Duration::from_millis(8), move || {
+                        let (start_y, target_y, start_time) = {
+                            let d = data_inner.lock().unwrap();
+                            (d.0, d.1, d.2)
+                        };
+
+                        let elapsed = start_time.elapsed().as_millis() as f64;
+                        let duration_ms = 150.0;
+                        let t = (elapsed / duration_ms).min(1.0);
+
+                        let progress = 1.0 - (1.0 - t).powi(3);
+                        adj_inner.set_value(start_y + ((target_y - start_y) * progress));
+
+                        if t < 1.0 {
+                            glib::ControlFlow::Continue
+                        } else {
+                            *anim_tracker_inner.lock().unwrap() = None;
+                            glib::ControlFlow::Break
+                        }
+                    });
+                *tracker = Some(source_id);
+            }
+
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+
+    // --- ENABLE SMOOTH SCROLLING ---
+    // This enables the smooth-scrolling behavior for mouse wheels and touchpads
+    scrolled.set_propagate_natural_height(true);
+    scrolled.set_kinetic_scrolling(true);
+
+    // Ensure the scroll policy allows for vertical movement
     scrolled.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+
     let adj = scrolled.vadjustment();
+    adj.set_step_increment(0.1); // Smaller value = smoother but slower wheel scroll
 
     let content_vbox = gtk::Box::new(gtk::Orientation::Vertical, 10);
     content_vbox.set_margin(10);
 
-    // ID = Internal Library Name, Name = Custom UI Label, Icon = Tab Icon
     let category_order = vec![
         ("Recents", "Recently Used", "🕒"),
         ("SmileysAndEmotion", "Smileys", "😀"),
@@ -128,22 +210,17 @@ fn create_emoji_picker(
         }
 
         let config = PersistentConfig::load(&app_id);
-
-        // CRITICAL FIX: Use group_id for lookup, NOT display_name
         let list = if group_id == "Recents" {
             config.recents
         } else {
             emoji_groups.get(group_id).cloned().unwrap_or_default()
         };
 
-        // Ensure the category shows up if it has emojis or is the Recents tab
         if list.is_empty() && group_id != "Recents" {
             continue;
         }
 
         let section_box = gtk::Box::new(gtk::Orientation::Vertical, 5);
-
-        // Label using the Custom Display Name
         let label = gtk::Label::new(None);
         label.set_markup(&format!(
             "<span size='large' weight='bold'>{}</span>",
@@ -183,7 +260,6 @@ fn create_emoji_picker(
                     .set_icon(Some(create_emoji_icon(&app.emoji, app.state)));
                 win_c.hide();
             });
-
             flowbox.add(&btn);
         }
 
@@ -193,40 +269,47 @@ fn create_emoji_picker(
         let tab_label = gtk::Label::new(Some(icon));
         let dummy_page = gtk::Box::new(gtk::Orientation::Vertical, 0);
         notebook.append_page(&dummy_page, Some(&tab_label));
-
-        // Ensure all child widgets (including the label) are rendered
         section_box.show_all();
     }
 
     let adj_animate = adj.clone();
     let content_ref = content_vbox.clone();
+
     notebook.connect_switch_page(move |_, _, page_num| {
         if let Some(target_section) = sections.get(page_num as usize) {
             let adj_timer = adj_animate.clone();
-            let target = target_section.clone();
             let container = content_ref.clone();
+            let target = target_section.clone();
 
-            glib::timeout_add_local(std::time::Duration::from_millis(20), move || {
+            glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
                 if let Some((_, target_y)) = target.translate_coordinates(&container, 0, 0) {
-                    let target_y = target_y as f64;
                     let start_y = adj_timer.value();
-                    let distance = target_y - start_y;
-                    let steps = 12;
-                    let mut current_step = 0;
+                    let end_y = target_y as f64;
+                    let distance = end_y - start_y;
 
-                    let adj_frame = adj_timer.clone();
-                    glib::timeout_add_local(std::time::Duration::from_millis(16), move || {
-                        current_step += 1;
-                        let progress = current_step as f64 / steps as f64;
-                        let ease_out = 1.0 - (1.0 - progress).powi(3);
+                    if distance.abs() < 1.0 {
+                        return glib::ControlFlow::Break;
+                    }
 
-                        adj_frame.set_value(start_y + (distance * ease_out));
+                    let duration_ms = 250.0;
+                    let start_time = std::time::Instant::now();
 
-                        if current_step < steps {
-                            glib::ControlFlow::Continue
-                        } else {
-                            glib::ControlFlow::Break
+                    // FIX: Clone the adjustment handle specifically for the inner FnMut closure
+                    let adj_inner = adj_timer.clone();
+
+                    glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
+                        let elapsed = start_time.elapsed().as_millis() as f64;
+                        let t = elapsed / duration_ms;
+
+                        if t >= 1.0 {
+                            adj_inner.set_value(end_y);
+                            return glib::ControlFlow::Break;
                         }
+
+                        let progress = 1.0 - (1.0 - t).powi(5);
+                        adj_inner.set_value(start_y + (distance * progress));
+
+                        glib::ControlFlow::Continue
                     });
                 }
                 glib::ControlFlow::Break
@@ -240,6 +323,11 @@ fn create_emoji_picker(
     window.add(&vbox);
 
     window.connect_delete_event(|win, _| {
+        win.hide();
+        glib::Propagation::Stop
+    });
+
+    window.connect_focus_out_event(|win, _| {
         win.hide();
         glib::Propagation::Stop
     });
@@ -457,6 +545,10 @@ fn main() {
                 // unsafe
                 //file_chooser.destroy();
             } else if event.id == "select_emoji" {
+                if emoji_picker_window.is_visible() {
+                    emoji_picker_window.hide();
+                    return glib::ControlFlow::Continue;
+                }
                 let config = PersistentConfig::load(&app_id);
 
                 // 2. Clear the old recent buttons
@@ -497,8 +589,26 @@ fn main() {
                     recents_box.add(&btn);
                 }
 
+                // --- POSITION WINDOW AT MOUSE ---
+                // 1. Get the default display and the pointer position
+                let display = gtk::gdk::Display::default().expect("Could not get default display");
+                let seat = display.default_seat().expect("Could not get default seat");
+                let device = seat.pointer().expect("Could not get pointer device");
+
+                // 2. Get the screen and coordinates
+                let (_, x, y) = device.position();
+
+                // 3. Move the window before showing it
+                // We subtract a small offset (e.g., 10px) so the window doesn't appear
+                // exactly under the cursor, which could trigger an immediate click
+                emoji_picker_window.move_(x - 225, y - 100);
+
                 emoji_picker_window.show_all();
-                emoji_picker_window.present();
+                let win_clone = emoji_picker_window.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                    win_clone.present();
+                    glib::ControlFlow::Break
+                });
             } else if event.id == "toggle" {
                 let mut app = app_state.lock().unwrap();
                 if app.state == State::Off || app.state == State::Error {
