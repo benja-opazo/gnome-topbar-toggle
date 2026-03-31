@@ -168,6 +168,7 @@ fn main() {
 
     let tray_icon = Arc::new(Mutex::new(
         TrayIconBuilder::new()
+            .with_temp_dir_path(std::env::temp_dir().join(format!("tray-icon-{}", app_id)))
             .with_menu(Box::new(menu))
             .with_icon(create_emoji_icon(&config.emoji, State::Off))
             .build()

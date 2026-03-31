@@ -1,4 +1,7 @@
+mod scroll;
+
 use gtk::prelude::*;
+use scroll::{SmoothScroller, scroll_to_widget};
 use std::sync::{Arc, Mutex};
 
 pub struct EmojiPicker {
@@ -6,6 +9,7 @@ pub struct EmojiPicker {
     recents_flowbox: gtk::FlowBox,
     on_select: Arc<dyn Fn(String) + 'static>,
     suppress_hide: Arc<Mutex<bool>>,
+    pending_present: Arc<Mutex<Option<glib::SourceId>>>,
 }
 
 impl EmojiPicker {
@@ -29,56 +33,8 @@ impl EmojiPicker {
         let scrolled =
             gtk::ScrolledWindow::new(None::<&gtk::Adjustment>, None::<&gtk::Adjustment>);
 
-        let adj_scroll = scrolled.vadjustment();
-        let current_animation: Arc<Mutex<Option<glib::SourceId>>> = Arc::new(Mutex::new(None));
-        let animation_data = Arc::new(Mutex::new((0.0_f64, 0.0_f64, std::time::Instant::now())));
-
-        let anim_tracker = current_animation.clone();
-        let data_tracker = animation_data.clone();
-
-        scrolled.connect_scroll_event(move |_, event| {
-            let (_, dy) = event.scroll_deltas().unwrap_or((0.0, 0.0));
-            if dy == 0.0 {
-                return glib::Propagation::Proceed;
-            }
-
-            let mut data = data_tracker.lock().unwrap();
-            let mut tracker = anim_tracker.lock().unwrap();
-
-            let current_val = adj_scroll.value();
-            let base_y = if tracker.is_some() { data.1 } else { current_val };
-            let new_target = (base_y + (dy * 160.0))
-                .clamp(adj_scroll.lower(), adj_scroll.upper() - adj_scroll.page_size());
-
-            *data = (current_val, new_target, std::time::Instant::now());
-
-            if tracker.is_none() {
-                let adj_inner = adj_scroll.clone();
-                let anim_tracker_inner = anim_tracker.clone();
-                let data_inner = data_tracker.clone();
-
-                let source_id =
-                    glib::timeout_add_local(std::time::Duration::from_millis(8), move || {
-                        let (start_y, target_y, start_time) = {
-                            let d = data_inner.lock().unwrap();
-                            (d.0, d.1, d.2)
-                        };
-                        let t = (start_time.elapsed().as_millis() as f64 / 150.0).min(1.0);
-                        let progress = 1.0 - (1.0 - t).powi(3);
-                        adj_inner.set_value(start_y + ((target_y - start_y) * progress));
-
-                        if t < 1.0 {
-                            glib::ControlFlow::Continue
-                        } else {
-                            *anim_tracker_inner.lock().unwrap() = None;
-                            glib::ControlFlow::Break
-                        }
-                    });
-                *tracker = Some(source_id);
-            }
-
-            glib::Propagation::Stop
-        });
+        let scroller = SmoothScroller::new(scrolled.vadjustment());
+        scroller.attach(&scrolled);
 
         scrolled.set_propagate_natural_height(true);
         scrolled.set_kinetic_scrolling(true);
@@ -162,37 +118,7 @@ impl EmojiPicker {
 
         notebook.connect_switch_page(move |_, _, page_num| {
             if let Some(target_section) = sections.get(page_num as usize) {
-                let adj_timer = adj.clone();
-                let container = content_ref.clone();
-                let target = target_section.clone();
-
-                glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
-                    if let Some((_, target_y)) = target.translate_coordinates(&container, 0, 0) {
-                        let start_y = adj_timer.value();
-                        let end_y = target_y as f64;
-                        let distance = end_y - start_y;
-
-                        if distance.abs() < 1.0 {
-                            return glib::ControlFlow::Break;
-                        }
-
-                        let duration_ms = 250.0;
-                        let start_time = std::time::Instant::now();
-                        let adj_inner = adj_timer.clone();
-
-                        glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
-                            let t = start_time.elapsed().as_millis() as f64 / duration_ms;
-                            if t >= 1.0 {
-                                adj_inner.set_value(end_y);
-                                return glib::ControlFlow::Break;
-                            }
-                            let progress = 1.0 - (1.0 - t).powi(5);
-                            adj_inner.set_value(start_y + (distance * progress));
-                            glib::ControlFlow::Continue
-                        });
-                    }
-                    glib::ControlFlow::Break
-                });
+                scroll_to_widget(adj.clone(), target_section.clone(), content_ref.clone());
             }
         });
 
@@ -202,15 +128,27 @@ impl EmojiPicker {
         window.add(&vbox);
 
         let suppress_hide: Arc<Mutex<bool>> = Arc::new(Mutex::new(false));
+        let pending_present: Arc<Mutex<Option<glib::SourceId>>> = Arc::new(Mutex::new(None));
+
+        let suppress_hide_fi = Arc::clone(&suppress_hide);
         let suppress_hide_fo = Arc::clone(&suppress_hide);
+        let pending_fo = Arc::clone(&pending_present);
 
         window.connect_delete_event(|win, _| {
             win.hide();
             glib::Propagation::Stop
         });
 
+        window.connect_focus_in_event(move |_, _| {
+            *suppress_hide_fi.lock().unwrap() = false;
+            glib::Propagation::Proceed
+        });
+
         window.connect_focus_out_event(move |win, _| {
             if !*suppress_hide_fo.lock().unwrap() {
+                if let Some(id) = pending_fo.lock().unwrap().take() {
+                    id.remove();
+                }
                 win.hide();
             }
             glib::Propagation::Stop
@@ -221,6 +159,7 @@ impl EmojiPicker {
             recents_flowbox,
             on_select,
             suppress_hide,
+            pending_present,
         }
     }
 
@@ -240,19 +179,29 @@ impl EmojiPicker {
     }
 
     pub fn show_at(&self, x: i32, y: i32) {
+        if let Some(id) = self.pending_present.lock().unwrap().take() {
+            id.remove();
+        }
+
         *self.suppress_hide.lock().unwrap() = true;
         self.window.move_(x - 225, y - 100);
         self.window.show_all();
+
         let win = self.window.clone();
-        let suppress = Arc::clone(&self.suppress_hide);
-        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        let pending = Arc::clone(&self.pending_present);
+        let source_id = glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            *pending.lock().unwrap() = None;
             win.present();
-            *suppress.lock().unwrap() = false;
             glib::ControlFlow::Break
         });
+        *self.pending_present.lock().unwrap() = Some(source_id);
     }
 
     pub fn hide(&self) {
+        if let Some(id) = self.pending_present.lock().unwrap().take() {
+            id.remove();
+        }
+        *self.suppress_hide.lock().unwrap() = false;
         self.window.hide();
     }
 
