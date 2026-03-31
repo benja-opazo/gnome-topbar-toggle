@@ -1,0 +1,9 @@
+[package]
+name = "emoji-picker"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+glib = "0.18"
+emojis = "0.6"

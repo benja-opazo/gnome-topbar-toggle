@@ -384,6 +384,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
+name = "emoji-picker"
+version = "0.1.0"
+dependencies = [
+ "emojis",
+ "glib",
+ "gtk",
+]
+
+[[package]]
 name = "emojis"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -745,9 +754,10 @@ version = "0.1.0"
 dependencies = [
  "cairo-rs",
  "dirs 5.0.1",
- "emojis",
+ "emoji-picker",
  "glib",
  "gtk",
+ "libc",
  "notify-rust",
  "serde",
  "serde_json",
