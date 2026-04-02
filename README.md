@@ -18,6 +18,31 @@ On Debian/Ubuntu:
 sudo apt install libgtk-3-dev libglib2.0-dev libcairo2-dev libnotify-dev fonts-noto-color-emoji
 ```
 
+## GNOME Shell extension
+
+GNOME does not display system tray icons by default. The **AppIndicator and KStatusNotifierItem Support** extension is required for the tray icon to appear in the top bar.
+
+Install it from the GNOME Extensions website:
+
+1. Install the browser integration package:
+
+```bash
+sudo apt install gnome-browser-connector
+```
+
+2. Install the [GNOME Shell integration browser extension](https://extensions.gnome.org) for your browser.
+
+3. Go to [extensions.gnome.org/extension/615](https://extensions.gnome.org/extension/615) and toggle the switch to install it.
+
+Alternatively, install and enable it from the terminal:
+
+```bash
+sudo apt install gnome-shell-extension-appindicator
+gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
+```
+
+Log out and back in for the extension to take effect.
+
 ## Installation
 
 ```bash
