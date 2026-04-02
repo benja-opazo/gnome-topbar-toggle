@@ -33,14 +33,7 @@ sudo apt install gnome-browser-connector
 
 2. Install the [GNOME Shell integration browser extension](https://extensions.gnome.org) for your browser.
 
-3. Go to [extensions.gnome.org/extension/615](https://extensions.gnome.org/extension/615) and toggle the switch to install it.
-
-Alternatively, install and enable it from the terminal:
-
-```bash
-sudo apt install gnome-shell-extension-appindicator
-gnome-extensions enable appindicatorsupport@rgcjonas.gmail.com
-```
+3. Go to [AppIndicator and KStatusNotifierItem Support ](https://extensions.gnome.org/extension/615) and toggle the switch to install it.
 
 Log out and back in for the extension to take effect.
 
@@ -76,6 +69,12 @@ The status dot on the icon reflects the current state:
 
 Create `~/.config/systemd/user/topbar-toggle@.service`:
 
+If the directory doesn't exist then create it with:
+
+```bash
+mkdir -p ~/.config/systemd/user/
+```
+
 ```ini
 [Unit]
 Description=GNOME Topbar Toggle (%i)
@@ -108,4 +107,4 @@ systemctl --user enable --now topbar-toggle@vpn.service
 systemctl --user enable --now topbar-toggle@sync.service
 ```
 
-Each instance has its own configuration and tray icon.
+Each instance will have its own configuration and tray icon.
