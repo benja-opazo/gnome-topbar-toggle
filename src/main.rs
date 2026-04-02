@@ -1,6 +1,6 @@
 use cairo::{Antialias, Context, Format, ImageSurface};
 use dirs;
-use emoji_picker::EmojiPicker;
+use emoji_picker::{EmojiPicker, EmojiPickerConfig};
 use gtk::prelude::*;
 use notify_rust::Notification;
 use serde::{Deserialize, Serialize};
@@ -179,7 +179,7 @@ fn main() {
     let tray_cb = Arc::clone(&tray_icon);
     let app_id_cb = app_id.clone();
 
-    let emoji_picker = EmojiPicker::new(move |emoji| {
+    let emoji_picker = EmojiPicker::new(EmojiPickerConfig::default(), move |emoji| {
         let mut app = app_state_cb.lock().unwrap();
         app.emoji = emoji.clone();
 
