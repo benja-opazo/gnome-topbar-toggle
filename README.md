@@ -1,3 +1,9 @@
+> [!NOTE]
+> This App is almost completely Vibed Coded. I wanted to run scripts in the tray, and I though it was a good small project to learn to use an LLM to make this happen. In a couple of days I could build something that I know I will use almost everyday. Also, I found it a good resource to make an App with a GUI using Rust and learn from it.
+I made this app for my personal use, but I am sharing it because it works perfectly for my use case, and maybe its useful for others.
+> If you have an issue with the app being Vibe Coded, please refrain to make any comments. Thanks.
+
+
 # gnome-topbar-toggle
 
 A GNOME system tray toggle button that runs a user-configured bash script and shows visual state feedback via an emoji icon with a colored status dot. Tested on GNOME.
