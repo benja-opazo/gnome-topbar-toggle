@@ -33,7 +33,7 @@ sudo apt install gnome-browser-connector
 
 2. Install the [GNOME Shell integration browser extension](https://extensions.gnome.org) for your browser.
 
-3. Go to [AppIndicator and KStatusNotifierItem Support ](https://extensions.gnome.org/extension/615) and toggle the switch to install it.
+3. Go to [AppIndicator and KStatusNotifierItem Support](https://extensions.gnome.org/extension/615) and toggle the switch to install it.
 
 Log out and back in for the extension to take effect.
 
@@ -67,13 +67,14 @@ The status dot on the icon reflects the current state:
 
 ## systemd user service
 
-Create `~/.config/systemd/user/topbar-toggle@.service`:
-
-If the directory doesn't exist then create it with:
+Create `~/.config/systemd/user/topbar-toggle@.service` with:
 
 ```bash
 mkdir -p ~/.config/systemd/user/
+nano ~/.config/systemd/user/topbar-toggle@.service
 ```
+
+And complete it with:
 
 ```ini
 [Unit]
