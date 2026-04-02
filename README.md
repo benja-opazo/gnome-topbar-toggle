@@ -9,13 +9,14 @@ A GNOME system tray toggle button that runs a user-configured bash script and sh
 - GLib
 - Cairo
 - libnotify
+- libxdo
 - Noto Color Emoji font (for emoji rendering)
 - Bash
 
 On Debian/Ubuntu:
 
 ```bash
-sudo apt install libgtk-3-dev libglib2.0-dev libcairo2-dev libnotify-dev fonts-noto-color-emoji
+sudo apt install libgtk-3-dev libglib2.0-dev libcairo2-dev libnotify-dev libxdo-dev fonts-noto-color-emoji
 ```
 
 ## GNOME Shell extension
